@@ -33,7 +33,7 @@ library(plotly)          # for aic_table function
 ```
 ### Individual Contributions
 
-**23176020**
+**Me (this repo's author) — Marginal model selection & diagnostics**
 
 - Constructed the AIC comparison tables for ARMA(p,q)-GARCH(1,1) models across orders 0–5 for both indices to systematically determine the optimal ARMA specification.
 - Fitted and compared GARCH, TGARCH, and eGARCH volatility models for both indices using AIC and BIC, selecting TGARCH for its ability to capture the leverage effect.
@@ -41,36 +41,36 @@ library(plotly)          # for aic_table function
 - Produced and interpreted diagnostic plots (density, Q-Q, ACF of residuals, ACF of squared residuals) to assess model adequacy.
 - Conducted Ljung-Box and Engle's ARCH tests on the standardised residuals to formally confirm that no remaining autocorrelation or ARCH effects were present.
 
-**23014125**
+**Teammate — PIT & copula fitting**
 
 - Applied the Probability Integral Transform to the standardised residuals and checked uniformity using histograms and K-S / A-D tests.
 - Fitted the copula model and selected the best copula using the AIC criterion.
 - Simulated joint observations from the fitted copula using Monte Carlo simulation.
 - Transformed simulated uniform values back to skewed Student-t residuals and prepared them to be reintroduced into the ARMA–TGARCH framework for VaR estimation.
 
-**24096152** 
+**Teammate — Return simulation**
 
 - Conducted preliminary diagnostic checks including ACF/PACF plots, ACF of squared returns, and Engle's ARCH LM test to confirm the presence of autocorrelation and ARCH effects in both indices, motivating the ARMA-TGARCH framework.
 - Derived the conditional mean and variance equations for the S&P500 (ARMA(0,0)-TGARCH(1,1)) and Nikkei 225 (ARMA(3,0)-TGARCH(1,1)) and implemented the one-week ahead simulation by combining fitted model parameters with the copula-generated residuals to produce 10,000 simulated returns per index.
 - Validated model fit through long-run simulation plots comparing actual vs. simulated log-return paths for both indices.
 
-**24076973**
+**Teammate — Data & EDA**
 
 - Selected the indices and provided justification for them.
 - Collected the returns, cleaning the dataset to account for discrepancies in holidays.
 - Conducted the Exploratory Data Analysis, including the Ljung-Box test.
 
-**22019340**
+**Teammate — VaR/CVaR & project coordination**
 
 - Calculated CVaR and VaR, alongside relevant plots and tables
 - Reached out to group and organised meetings
 - Assigned tasks to group members and oversaw completion of every section
 
-**22016121**
+**Teammate — Write-up & editing**
 
 - Contributed to the group discussions.
 - Wrote the conclusion and contribution list.
-- Compiled the final draft, insuring all contributions were consistent. Made grammatical and spelling edits where necessary. 
+- Compiled the final draft, insuring all contributions were consistent. Made grammatical and spelling edits where necessary.
 
 
 

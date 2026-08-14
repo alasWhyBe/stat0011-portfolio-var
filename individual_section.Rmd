@@ -5,8 +5,8 @@ date: "2026-03-02"
 ---
 
 <!--
-This file is my individual contribution to the STAT0011 Group 33 ICA report
-(see group_33_report.Rmd for the full report, which incorporates this section
+This file is my individual contribution to a group STAT0011 ICA report
+(see group_report.Rmd for the full report, which incorporates this section
 verbatim as Section 3: "Marginal Distribution Modelling").
 
 My job in the group pipeline was to take the weekly log-returns from the EDA
