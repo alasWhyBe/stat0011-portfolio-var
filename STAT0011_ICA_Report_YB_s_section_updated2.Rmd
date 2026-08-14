@@ -4,6 +4,37 @@ output: html_document
 date: "2026-03-02"
 ---
 
+<!--
+This file is my individual contribution to the STAT0011 Group 33 ICA report
+(see group_33_report.Rmd for the full report, which incorporates this section
+verbatim as Section 3: "Marginal Distribution Modelling").
+
+My job in the group pipeline was to take the weekly log-returns from the EDA
+(Section 2) and find, for each index (S&P500, Nikkei 225), the best-fitting
+ARMA-GARCH-type marginal time series model. Concretely, this section:
+
+  1. Grid-searches ARMA(p,q)-GARCH(1,1) orders by AIC to pick the mean equation.
+  2. Compares GARCH vs TGARCH vs eGARCH (given the chosen ARMA order) to pick
+     the volatility equation, since financial returns often show asymmetric
+     ("leverage") volatility responses that plain GARCH can't capture.
+  3. Checks that the skewed Student-t conditional distribution is the best
+     choice out of 6 candidates, since the returns are visibly skewed and
+     heavy-tailed in the EDA.
+  4. Runs residual diagnostics (density/QQ plots, ACF, Ljung-Box, Engle's ARCH
+     test) to confirm the final ARMA-TGARCH models are well specified.
+
+The fitted model objects produced here (SP500_model2, N225_model2) are the
+inputs to the rest of the group's pipeline: their standardised residuals are
+put through the Probability Integral Transform and used to fit a copula
+(Section 4), and their coefficients are used to re-simulate one-week-ahead
+returns for the portfolio VaR/CVaR estimates (Sections 5-6) — neither of
+which is included in this excerpt.
+
+The data-loading chunk below duplicates Section 2 of the full report so this
+file can be knitted standalone (it re-downloads prices from Yahoo Finance
+rather than depending on any object from another file).
+-->
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -11,6 +42,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r, include=FALSE}
 
 # Initiating Libraries
+# (Full list kept identical to the group report for consistency; only
+# quantmod, fGarch, rugarch, FinTS and knitr are actually exercised in this
+# section — the others are used by teammates' sections, e.g. VineCopula for
+# the copula fitting in Section 4.)
 library(quantmod)        # Downloading S&P500 Data
 library(fitdistrplus)    # Estimate parameters for distributions
 library(fGarch)          # Used for modeling financial time series
@@ -25,6 +60,10 @@ library(plotly)          # for aic_table function
 ```
 
 ```{r, results='hide', warning=FALSE}
+# Data setup, duplicated from Section 2 of the full group report so this
+# section can be knitted on its own — builds final_df, the weekly log-return
+# dataframe that everything below operates on.
+
 # Defining tickers
 s_ticker <- "^GSPC"     # S&P 500
 n_ticker <- "^N225"     # Nikkei 225
@@ -71,6 +110,9 @@ To systematically determine the optimal ARMA order for each index, we computed A
 library(knitr)
 
 # S&P500 AIC table
+# Grid search: fit ARMA(p,q)-GARCH(1,1) for every (p,q) in {0..5}x{0..5} and
+# record AIC, so the best mean-equation order can be read off the table
+# rather than picked by eye from ACF/PACF alone.
 aic_matrix1 <- matrix(NA, nrow = 5+1, ncol = 5+1)
 rownames(aic_matrix1) <- paste0("AR(", 0:5, ")")
 colnames(aic_matrix1) <- paste0("MA(", 0:5, ")")
@@ -94,6 +136,7 @@ The AIC values for the S&P500 are tightly clustered across all ARMA orders. The 
 library(knitr)
 
 # N225 AIC table
+# Same grid search repeated for the Nikkei 225 returns.
 aic_matrix2 <- matrix(NA, nrow = 5+1, ncol = 5+1)
 rownames(aic_matrix2) <- paste0("AR(", 0:5, ")")
 colnames(aic_matrix2) <- paste0("MA(", 0:5, ")")
@@ -145,7 +188,10 @@ We fitted three models for each index with the same specifications (ARMA order, 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
 
 # S&P Models
-SP500_model1 <- garchFit(formula = ~arma(0,0) + garch(1,1), data = final_df$SP500_Returns, 
+# Fit all three volatility specifications with the ARMA order chosen above
+# (0,0 for S&P500) and the same sstd conditional distribution, so AIC/BIC
+# differences below are attributable only to the volatility equation.
+SP500_model1 <- garchFit(formula = ~arma(0,0) + garch(1,1), data = final_df$SP500_Returns,
                           trace = F,cond.dist = "sstd")
 
 SP500_spec_TGARCH = ugarchspec(
@@ -182,6 +228,9 @@ N225_spec_eGARCH = ugarchspec(
 N225_model3 <- ugarchfit(data = final_df$Nikkei225_Returns, spec = N225_spec_eGARCH, solver = "solnp")
 
 # Results
+# NB: TGARCH (SP500_model2 / N225_model2) is the specification carried
+# forward through the rest of this section (diagnostics below) and into the
+# copula/simulation stages of the full group report.
 results3 <- data.frame(
   Test = c("AIC", "BIC"),
   `ARMA-GARCH` = c(SP500_model1@fit$ics["AIC"], SP500_model1@fit$ics["BIC"]),
@@ -257,6 +306,9 @@ For both indices, the skewed Student-t distribution (`sstd`) achieves the lowest
 #### 3.3.1 S&P500 Diagnostic Plots
 
 ```{r, echo=FALSE, fig.width=6, fig.height=4}
+# rugarch plot() "which" codes: 8 = empirical density vs. Normal/sstd,
+# 9 = QQ-plot vs. fitted sstd, 10 = ACF of standardised residuals,
+# 11 = ACF of squared standardised residuals.
 par(mfrow=c(1,2))
 for(i in c(8,9,10,11)) {
   plot(SP500_model2, which = i, ask = FALSE)
@@ -277,6 +329,7 @@ The ACF plots of the standardised residuals and squared standardised residuals a
 #### 3.3.2 Nikkei 225 Diagnostic Plots
 
 ```{r, echo=FALSE, fig.width=6, fig.height=4}
+# Same four diagnostic plots (see codes above), now for the Nikkei 225 model.
 par(mfrow=c(1,2))
 for(i in c(8,9,10,11)) {
   plot(N225_model2, which = i, ask = FALSE)
@@ -338,3 +391,12 @@ kable(results_arch_res, caption = "Engle's ARCH Test Results for Residuals")
 ```
 
 The results show p-values well above the 0.05 significance threshold for both indices across all tests. This means we fail to reject the null hypotheses of no autocorrelation (Ljung-Box) and no ARCH effects (Engle's ARCH test) in the standardised residuals. This confirms that there is no remaining autocorrelation or ARCH effect in the residuals of either model, indicating that both the ARMA(0,0)-TGARCH(1,1) model for the S&P500 and the ARMA(3,0)-TGARCH(1,1) model for the Nikkei 225 are well specified.
+
+<!--
+End of my section. In the full group report, `SP500_model2` and `N225_model2`
+(the validated ARMA-TGARCH fits above) are passed on to Section 4: their
+standardised residuals are transformed to Uniform(0,1) via the Probability
+Integral Transform, a copula is fitted to model the dependence between the
+two indices, and the resulting simulated returns feed into the portfolio
+VaR/CVaR estimates in Sections 5-6.
+-->
