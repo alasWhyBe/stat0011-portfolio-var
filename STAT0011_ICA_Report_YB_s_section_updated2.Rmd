@@ -1,0 +1,340 @@
+---
+title: "STAT0011_ICA_YB's section"
+output: html_document
+date: "2026-03-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+
+# Initiating Libraries
+library(quantmod)        # Downloading S&P500 Data
+library(fitdistrplus)    # Estimate parameters for distributions
+library(fGarch)          # Used for modeling financial time series
+library(rugarch)         # For TGARCH modelling
+library(VineCopula)      # For Copula fitting
+library(KScorrect)       # K-S Test
+library(ADGofTest)       # AD Test
+library(FinTS)           # Tests for stationarity
+library(tseries)         # Simulation of time-series
+library(knitr)           # Formating output
+library(plotly)          # for aic_table function
+```
+
+```{r, results='hide', warning=FALSE}
+# Defining tickers
+s_ticker <- "^GSPC"     # S&P 500
+n_ticker <- "^N225"     # Nikkei 225
+
+# Downloading data from Yahoo Finance
+getSymbols(c(s_ticker, n_ticker), src = "yahoo", from = "2000-01-01", to = "2025-12-31")
+
+# Obtaining weekly prices
+ep1 <- endpoints(GSPC, on="weeks")
+ep2 <- endpoints(N225, on="weeks")
+
+s_weekly_prices <- Ad(GSPC)[ep1, ]
+n_weekly_prices <- Ad(N225)[ep2, ]
+
+# Compute Log Returns
+s_log_ret <- diff(log(s_weekly_prices))[-1]
+n_log_ret <- diff(log(n_weekly_prices))[-1]
+
+# Standardising dates
+index(s_log_ret) <- as.Date(index(s_log_ret))
+index(n_log_ret) <- as.Date(index(n_log_ret))
+
+# Merge indices and remove non-overlapping trading periods between the US and Japan
+combined_data <- merge(s_log_ret, n_log_ret, all = FALSE)
+
+# Omitting any 'NA' values
+combined_data <- na.omit(combined_data) 
+colnames(combined_data) <- c("SP500_Returns", "Nikkei225_Returns")
+
+# Construct Portfolio and Convert to Dataframe for Excel
+final_df <- data.frame(Date = index(combined_data), coredata(combined_data))
+final_df$Weighted_Portfolio <- 0.5 * (final_df$SP500_Returns + final_df$Nikkei225_Returns)
+```
+
+## 3. Marginal Distribution Modelling
+
+### 3.1 Fitting an ARMA Model
+
+#### 3.1.1 AIC Table Analysis
+
+To systematically determine the optimal ARMA order for each index, we computed AIC values for all ARMA(p,q)-GARCH(1,1) combinations with $p, q \in \{0, 1, ..., 5\}$. Although the GARCH(1,1) component is introduced prematurely at this stage, it is included to ensure that the AIC comparison is not distorted by unmodelled volatility clustering (which, as established in the EDA, is present in both series). The conditional distribution is set to the skewed Student-t (`sstd`) throughout, for reasons that will be confirmed later.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+
+# S&P500 AIC table
+aic_matrix1 <- matrix(NA, nrow = 5+1, ncol = 5+1)
+rownames(aic_matrix1) <- paste0("AR(", 0:5, ")")
+colnames(aic_matrix1) <- paste0("MA(", 0:5, ")")
+
+for (p in 0:5) {
+  for (q in 0:5) {
+    model <- garchFit(formula = as.formula(paste("~arma(", p, ",", q, ") + garch(1,1)")),
+                      data = final_df$SP500_Returns, trace = FALSE, cond.dist = "sstd")
+    aic_matrix1[p+1, q+1] <- slot(model, "fit")$ics["AIC"]
+  }
+}
+
+kable(aic_matrix1, digits = 4, caption = "SP500 ARMA(p,q)-GARCH(1,1) AIC Values")
+```
+
+**S&P500 AIC Table**
+
+The AIC values for the S&P500 are tightly clustered across all ARMA orders. The lowest AIC is achieved at ARMA(5,3), but the improvement over ARMA(0,0) is marginal (approximately 0.037). Beyond ARMA(0,0), increasing the ARMA order yields negligible gains, with the values forming a near-horizontal surface. This suggests that there is very little linear dependence in the S&P500 weekly log-returns to be captured by an ARMA component. Consequently, ARMA(0,0) is a strong candidate as it provides comparable effectiveness whilst maintaining maximum parsimony.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+
+# N225 AIC table
+aic_matrix2 <- matrix(NA, nrow = 5+1, ncol = 5+1)
+rownames(aic_matrix2) <- paste0("AR(", 0:5, ")")
+colnames(aic_matrix2) <- paste0("MA(", 0:5, ")")
+
+for (p in 0:5) {
+  for (q in 0:5) {
+    model <- garchFit(formula = as.formula(paste("~arma(", p, ",", q, ") + garch(1,1)")),
+                      data = final_df$Nikkei225_Returns, trace = FALSE, cond.dist = "sstd")
+    aic_matrix2[p+1, q+1] <- slot(model, "fit")$ics["AIC"]
+  }
+}
+
+kable(aic_matrix2, digits = 4, caption = "N225 ARMA(p,q)-GARCH(1,1) AIC Values")
+```
+
+**Nikkei 225 AIC Table**
+
+A similar pattern emerges for the Nikkei 225: the AIC values are very tightly clustered, with the total range spanning approximately 0.009. The lowest AIC is achieved at ARMA(3,0), and the AR(3) row generally performs well across different MA orders. However, adding MA terms beyond MA(0) provides no meaningful improvement, indicating that the MA component is unnecessary. The slight advantage of ARMA(3,0) over ARMA(0,0) suggests a possible autoregressive effect at lag 3, which we will investigate further using the ACF/PACF plots.
+
+#### 3.1.2 ARMA Results
+
+From the analysis on the weekly log-returns of the S&P500, we have chosen an **ARMA(0,0)** model because:
+
+- The ACF and PACF plots show no significant spikes beyond lag 0, indicating no meaningful linear dependence in the returns. This is consistent with the efficient market hypothesis, where returns on a major, highly liquid index like the S&P500 are difficult to predict from past values.
+- The AIC table confirms that increasing the ARMA order beyond (0,0) yields negligible improvement.
+- It is the most parsimonious specification, and there is insufficient evidence to justify additional parameters.
+
+From the analysis on the weekly log-returns of the Nikkei 225, we have chosen an **ARMA(3,0)** model because:
+
+- The PACF displays a notable spike at lag 3, suggesting an autoregressive effect at that lag.
+- The AIC table confirms that ARMA(3,0) achieves the lowest AIC value across the entire grid, and that adding MA terms provides no further improvement.
+- It provides a good balance between parsimony and explanatory power: the AR(3) component captures the lag-3 dependence without over-parameterising the model with unnecessary MA terms.
+
+
+### 3.2 Fitting a GARCH Type Model
+
+We previously found evidence of volatility clustering and significant ARCH effects in our log-returns. This led us to the conclusion that a GARCH-type model is necessary to capture the time-varying volatility.
+
+#### 3.2.1 Model Parameters (ARCH and GARCH Terms)
+
+From the lecture notes: "In practice, when people (both in academia and industry -- banks, hedge funds, etc) use a GARCH model for time-varying conditional variance, it is overwhelmingly the GARCH(1,1) model which is chosen." The ACF plots of squared log-returns (provided in the EDA section) further support this: both indices show strong immediate impact of volatility shocks (large spike at lag 1) followed by gradual decay, indicating that a single ARCH and a single GARCH parameter are sufficient to capture the immediate and persistent effects of volatility shocks. We will later analyse the squared residuals of our model, and if necessary (i.e., if the squared residuals still display autocorrelation), revise our parameter estimates.
+
+#### 3.2.2 GARCH, TGARCH, eGARCH Model Comparison
+
+In this section, we compare three variants of volatility models: standard GARCH, TGARCH, and eGARCH. While the standard GARCH model captures volatility clustering through symmetric responses to shocks, both TGARCH and eGARCH allow for asymmetry in the volatility process. The TGARCH model explicitly models the leverage effect by allowing negative shocks to have a larger impact on volatility than positive shocks. This is generally observable in financial assets and supported by the Volatility Feedback Hypothesis, which suggests that falling prices spur more selling and thus increase volatility, while rising prices boost investor confidence and reduce uncertainty. Similarly, the eGARCH model captures asymmetry through a logarithmic formulation, ensuring that the conditional variance is always positive. Given that the log-returns of the S&P500 and Nikkei 225 exhibit heavier negative tails and asymmetric responses, particularly during market downturns, these models might better accommodate the observed asymmetries.
+
+We fitted three models for each index with the same specifications (ARMA order, GARCH(1,1) parameters, and skewed Student-t conditional distribution), varying only the type of volatility model. We base our selection on AIC and BIC, looking for the best balance between fit and parsimony.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+
+# S&P Models
+SP500_model1 <- garchFit(formula = ~arma(0,0) + garch(1,1), data = final_df$SP500_Returns, 
+                          trace = F,cond.dist = "sstd")
+
+SP500_spec_TGARCH = ugarchspec(
+  variance.model = list(model = "fGARCH", garchOrder = c(1,1), submodel = "TGARCH"), 
+  mean.model = list(armaOrder = c(0,0), include.mean = TRUE), 
+  distribution.model = "sstd")
+
+SP500_model2 <- ugarchfit(data = final_df$SP500_Returns, spec = SP500_spec_TGARCH, solver = "solnp") 
+
+SP500_spec_eGARCH = ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1,1)), 
+  mean.model = list(armaOrder = c(0,0), include.mean = TRUE), 
+  distribution.model = "sstd")
+
+SP500_model3 <- ugarchfit(data = final_df$SP500_Returns, spec = SP500_spec_eGARCH, solver = "solnp") 
+
+
+# N225 Models
+N225_model1 <- garchFit(formula = ~arma(3,0) + garch(1,1), data = final_df$Nikkei225_Returns, 
+                          trace = F,cond.dist = "sstd")
+
+N225_spec_TGARCH = ugarchspec(
+  variance.model = list(model = "fGARCH", garchOrder = c(1,1), submodel = "TGARCH"), 
+  mean.model = list(armaOrder = c(3,0), include.mean = TRUE), 
+  distribution.model = "sstd")
+
+N225_model2 <- ugarchfit(data = final_df$Nikkei225_Returns, spec = N225_spec_TGARCH, solver = "solnp")
+
+N225_spec_eGARCH = ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1,1)), 
+  mean.model = list(armaOrder = c(3,0), include.mean = TRUE), 
+  distribution.model = "sstd")
+
+N225_model3 <- ugarchfit(data = final_df$Nikkei225_Returns, spec = N225_spec_eGARCH, solver = "solnp")
+
+# Results
+results3 <- data.frame(
+  Test = c("AIC", "BIC"),
+  `ARMA-GARCH` = c(SP500_model1@fit$ics["AIC"], SP500_model1@fit$ics["BIC"]),
+  `ARMA-TGARCH` = c(infocriteria(SP500_model2)[1], infocriteria(SP500_model2)[2]),
+  `ARMA-eGARCH` = c(infocriteria(SP500_model3)[1], infocriteria(SP500_model3)[2])
+)
+
+kable(results3, caption = "S&P500 GARCH, TGARCH, and eGARCH Model Comparison")
+
+results4 <- data.frame(
+  Test = c("AIC", "BIC"),
+  `ARMA-GARCH` = c(N225_model1@fit$ics["AIC"], N225_model1@fit$ics["BIC"]),
+  `ARMA-TGARCH` = c(infocriteria(N225_model2)[1], infocriteria(N225_model2)[2]),
+  `ARMA-eGARCH` = c(infocriteria(N225_model3)[1], infocriteria(N225_model3)[2])
+)
+
+kable(results4, caption = "N225 GARCH, TGARCH, and eGARCH Model Comparison")
+
+```
+
+Comparing the models using AIC and BIC reveals that the standard GARCH specification is outperformed by both the TGARCH and eGARCH models in capturing the asymmetric volatility features of the data. For the S&P500, the ARMA-TGARCH model exhibits the lowest AIC and BIC values, indicating a better fit compared to both the standard GARCH and the eGARCH alternatives. For the Nikkei 225, the differences between TGARCH and eGARCH are marginal. Given that the TGARCH model directly captures the leverage effect -- by allowing negative shocks to have a more pronounced impact on volatility -- and offers clear interpretability, we opt for the TGARCH specification for consistency across both indices, despite any slight numerical edge for eGARCH.
+
+
+#### 3.2.3 Conditional Distribution Check
+
+We will now verify whether our choice of the skewed Student-t (`sstd`) conditional distribution is appropriate. To do so, we evaluated the respective ARMA-TGARCH models for each index across six candidate conditional distributions, holding all other model parameters constant (ARMA order, GARCH order). The function iterates through each distribution and returns the corresponding AIC and BIC values.
+
+This comparison is motivated by our earlier diagnostics: the Jarque-Bera test indicated significant departures from normality, and the histograms and Q-Q plots revealed heavy tails and skewness in the log-returns. A standard Normal distribution would therefore be inadequate. The skewed Student-t distribution (`sstd`) is expected to perform well because it accommodates both heavy tails (via the degrees of freedom parameter) and asymmetry (via the skew parameter).
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+cond_dists <- c("norm", "std", "ged", "snorm", "sged", "sstd")
+
+# S&P500
+ics_table1 <- matrix(NA, nrow = 6, ncol = 2)
+rownames(ics_table1) <- cond_dists
+colnames(ics_table1) <- c("AIC", "BIC")
+
+for (i in seq_along(cond_dists)) {
+  spec <- ugarchspec(
+    variance.model = list(model = "fGARCH", garchOrder = c(1,1), submodel = "TGARCH"),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+    distribution.model = cond_dists[i])
+  model <- ugarchfit(data = final_df$SP500_Returns, spec = spec, solver = "solnp")
+  ics_table1[i, "AIC"] <- infocriteria(model)[1]
+  ics_table1[i, "BIC"] <- infocriteria(model)[2]
+}
+
+kable(ics_table1, caption = "Results for S&P500 - ARMA(0,0)-TGARCH(1,1)")
+
+# N225
+ics_table2 <- matrix(NA, nrow = 6, ncol = 2)
+rownames(ics_table2) <- cond_dists
+colnames(ics_table2) <- c("AIC", "BIC")
+
+for (i in seq_along(cond_dists)) {
+  spec <- ugarchspec(
+    variance.model = list(model = "fGARCH", garchOrder = c(1,1), submodel = "TGARCH"),
+    mean.model = list(armaOrder = c(3,0), include.mean = TRUE),
+    distribution.model = cond_dists[i])
+  model <- ugarchfit(data = final_df$Nikkei225_Returns, spec = spec, solver = "solnp")
+  ics_table2[i, "AIC"] <- infocriteria(model)[1]
+  ics_table2[i, "BIC"] <- infocriteria(model)[2]
+}
+
+kable(ics_table2, caption = "Results for N225 - ARMA(3,0)-TGARCH(1,1)")
+```
+
+For both indices, the skewed Student-t distribution (`sstd`) achieves the lowest AIC and BIC values, confirming our earlier intuition. The ranking tells a coherent story: skewed distributions (`snorm`, `sged`, `sstd`) consistently outperform their non-skewed counterparts (`norm`, `ged`, `std`), confirming that skewness is an important feature of the data. Similarly, heavy-tailed distributions (`std`, `sstd`) outperform their lighter-tailed equivalents (`norm`, `snorm`), confirming the relevance of excess kurtosis. The `sstd` distribution captures both features simultaneously, which is why it provides the best fit.
+
+
+### 3.3 Model Checking
+
+#### 3.3.1 S&P500 Diagnostic Plots
+
+```{r, echo=FALSE, fig.width=6, fig.height=4}
+par(mfrow=c(1,2))
+for(i in c(8,9,10,11)) {
+  plot(SP500_model2, which = i, ask = FALSE)
+}
+```
+
+**Distributional Fit Diagnostics**
+
+The first plot shows the empirical density (histogram) of the standardised residuals, overlaid with the theoretical density curves of the Normal and `sstd` distributions. As previously concluded, the `sstd` distribution provides a better fit: the histogram reveals that the residuals exhibit heavier negative tails (i.e., asymmetry), and the `sstd` density curve fits more closely, indicating that the skew parameter is helping to capture that asymmetry.
+
+The Q-Q plot compares the quantiles of our standardised residuals to those of the fitted `sstd` distribution. Almost all points are tightly clustered along the 45-degree line, with no systematic deviation patterns, indicating a very good fit. Any outliers in the extreme lower tail could reflect rare extreme events (such as the 2008 financial crisis or the Covid market crash), which are plausible given the 25-year span of our data.
+
+**Autocorrelation and ARCH Effects Diagnostics**
+
+The ACF plots of the standardised residuals and squared standardised residuals are used to assess whether the model has successfully captured the linear dependence in the mean and the volatility clustering respectively. In both plots, nearly all bars lie within the dashed significance bounds, indicating that neither the standardised residuals nor the squared residuals display significant autocorrelation. We can thus conclude that the ARMA(0,0)-TGARCH(1,1) model has successfully captured both the linear autocorrelation (or lack thereof) in the returns and the ARCH effects present in our data.
+
+
+#### 3.3.2 Nikkei 225 Diagnostic Plots
+
+```{r, echo=FALSE, fig.width=6, fig.height=4}
+par(mfrow=c(1,2))
+for(i in c(8,9,10,11)) {
+  plot(N225_model2, which = i, ask = FALSE)
+}
+```
+
+**Distributional Fit Diagnostics**
+
+Again, the histogram of standardised residuals aligns more closely with the skewed Student-t density curve than with the Normal one, indicating that the skew parameter effectively accounts for the asymmetry in the tails of the returns distribution, while also accommodating heavier tails than those of the Normal distribution. The Q-Q plot shows that most points lie near the 45-degree line, confirming that the majority of the standardised residuals conform well with the assumed skewed Student-t distribution. Although a small number of points in the extreme tails deviate from the theoretical line, the overall alignment is strong. Thus, we conclude that the ARMA(3,0)-TGARCH(1,1) model, with a skewed Student-t specification, adequately captures the key features of the Nikkei 225 return distribution, including its skewness and heavier tails.
+
+**Autocorrelation and ARCH Effects Diagnostics**
+
+Looking at the ACF of the standardised residuals, most bars lie within the significance bounds, and there is no strong evidence of remaining autocorrelation. Any isolated spikes at high lags are likely attributable to chance (with 30 lags, we expect approximately 1-2 spurious significant spikes at the 5% level). In the ACF of squared standardised residuals, nearly all bars are within the bounds. This indicates that the TGARCH component has adequately captured the volatility clustering. To formally confirm these visual findings, we conduct the Ljung-Box and ARCH tests below.
+
+
+#### 3.3.3 Ljung-Box and Engle's ARCH Tests
+
+To confirm the results from the diagnostic plots, we conducted Ljung-Box tests on both the standardised residuals and the squared standardised residuals, as well as Engle's ARCH tests for both the S&P500 and Nikkei 225 models. The Ljung-Box test assesses whether there is remaining autocorrelation in the residuals (null hypothesis: no autocorrelation), while Engle's ARCH test evaluates whether there are remaining ARCH effects (null hypothesis: no ARCH effects, i.e., constant variance).
+
+```{r, echo=FALSE, warning=FALSE}
+# Extract the standardized residuals
+SP500_res <- residuals(SP500_model2, standardize = TRUE)
+N225_res <- residuals(N225_model2, standardize = TRUE)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+# S&P Tests
+LB_res_SP <- Box.test(SP500_res, lag = 13, type = "Ljung-Box")  
+LB_sq_res_SP <- Box.test(SP500_res**2, lag = 13, type = "Ljung-Box") 
+
+# N225 Tests
+LB_res_N225 <- Box.test(N225_res, lag = 13, type = "Ljung-Box")  
+LB_sq_res_N225 <- Box.test(N225_res**2, lag = 13, type = "Ljung-Box") 
+
+# Results dataframe
+results_LB_residuals <- data.frame(
+  Test = c("Statistic Residuals", "p-value", "Statistic Squared Residuals", "p-value"),
+  `S&P 500` = c(LB_res_SP$statistic, LB_res_SP$p.value, LB_sq_res_SP$statistic, LB_sq_res_SP$p.value),
+  `N 225` = c(LB_res_N225$statistic, LB_res_N225$p.value, LB_sq_res_N225$statistic, LB_sq_res_N225$p.value)
+)
+
+kable(results_LB_residuals, caption = "Ljung-Box Test Results for Residuals and Squared Residuals")
+
+
+# Conduct Engle's ARCH Test for 12 lags on the weekly log returns
+arch_test_res_SP <- ArchTest(SP500_res, lags = 13)
+arch_test_res_N225 <- ArchTest(N225_res, lags = 13)
+
+# Results dataframe for Engle's ARCH Test
+results_arch_res <- data.frame(
+  Test = c("ARCH Test Statistic", "p-value"),
+  `S&P 500` = c(arch_test_res_SP$statistic, arch_test_res_SP$p.value),
+  `N 225` = c(arch_test_res_N225$statistic, arch_test_res_N225$p.value)
+)
+
+kable(results_arch_res, caption = "Engle's ARCH Test Results for Residuals")
+```
+
+The results show p-values well above the 0.05 significance threshold for both indices across all tests. This means we fail to reject the null hypotheses of no autocorrelation (Ljung-Box) and no ARCH effects (Engle's ARCH test) in the standardised residuals. This confirms that there is no remaining autocorrelation or ARCH effect in the residuals of either model, indicating that both the ARMA(0,0)-TGARCH(1,1) model for the S&P500 and the ARMA(3,0)-TGARCH(1,1) model for the Nikkei 225 are well specified.
